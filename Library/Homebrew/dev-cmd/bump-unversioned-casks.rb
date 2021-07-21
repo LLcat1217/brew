@@ -22,8 +22,8 @@ module Homebrew
       EOS
       switch "-n", "--dry-run",
              description: "Do everything except caching state and opening pull requests."
-      flag  "--limit=",
-            description: "Maximum runtime in minutes."
+      flag   "--limit=",
+             description: "Maximum runtime in minutes."
       flag   "--state-file=",
              description: "File for caching state."
 
@@ -78,7 +78,7 @@ module Homebrew
 
       state[key] = new_state
 
-      state_file.atomic_write JSON.generate(state) unless args.dry_run?
+      state_file.atomic_write JSON.pretty_generate(state) unless args.dry_run?
     end
   end
 

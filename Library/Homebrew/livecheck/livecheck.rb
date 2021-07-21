@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "livecheck/error"
+require "livecheck/livecheck_version"
 require "livecheck/skip_conditions"
 require "livecheck/strategy"
 require "ruby-progressbar"
@@ -60,12 +61,34 @@ module Homebrew
       @livecheck_strategy_names.freeze
     end
 
+    # Uses `formulae_and_casks_to_check` to identify taps in use other than
+    # homebrew/core and homebrew/cask and loads strategies from them.
+    sig { params(formulae_and_casks_to_check: T::Array[T.any(Formula, Cask::Cask)]).void }
+    def load_other_tap_strategies(formulae_and_casks_to_check)
+      other_taps = {}
+      formulae_and_casks_to_check.each do |formula_or_cask|
+        next if formula_or_cask.tap.blank?
+        next if formula_or_cask.tap.name == CoreTap.instance.name
+        next if formula_or_cask.tap.name == "homebrew/cask"
+        next if other_taps[formula_or_cask.tap.name]
+
+        other_taps[formula_or_cask.tap.name] = formula_or_cask.tap
+      end
+      other_taps = other_taps.sort.to_h
+
+      other_taps.each_value do |tap|
+        tap_strategy_path = "#{tap.path}/livecheck/strategy"
+        Dir["#{tap_strategy_path}/*.rb"].sort.each(&method(:require)) if Dir.exist?(tap_strategy_path)
+      end
+    end
+
     # Executes the livecheck logic for each formula/cask in the
     # `formulae_and_casks_to_check` array and prints the results.
     sig {
       params(
-        formulae_and_casks_to_check: T::Enumerable[T.any(Formula, Cask::Cask)],
+        formulae_and_casks_to_check: T::Array[T.any(Formula, Cask::Cask)],
         full_name:                   T::Boolean,
+        handle_name_conflict:        T::Boolean,
         json:                        T::Boolean,
         newer_only:                  T::Boolean,
         debug:                       T::Boolean,
@@ -75,23 +98,27 @@ module Homebrew
     }
     def run_checks(
       formulae_and_casks_to_check,
-      full_name: false, json: false, newer_only: false, debug: false, quiet: false, verbose: false
+      full_name: false, handle_name_conflict: false, json: false, newer_only: false,
+      debug: false, quiet: false, verbose: false
     )
-      # Identify any non-homebrew/core taps in use for current formulae
-      non_core_taps = {}
-      formulae_and_casks_to_check.each do |formula_or_cask|
-        next if formula_or_cask.tap.blank?
-        next if formula_or_cask.tap.name == CoreTap.instance.name
-        next if non_core_taps[formula_or_cask.tap.name]
+      load_other_tap_strategies(formulae_and_casks_to_check)
 
-        non_core_taps[formula_or_cask.tap.name] = formula_or_cask.tap
+      ambiguous_casks = []
+      if handle_name_conflict
+        ambiguous_casks = formulae_and_casks_to_check.group_by { |item| formula_or_cask_name(item, full_name: true) }
+                                                     .values
+                                                     .select { |items| items.length > 1 }
+                                                     .flatten
+                                                     .select { |item| item.is_a?(Cask::Cask) }
       end
-      non_core_taps = non_core_taps.sort.to_h
 
-      # Load additional Strategy files from taps
-      non_core_taps.each_value do |tap|
-        tap_strategy_path = "#{tap.path}/livecheck/strategy"
-        Dir["#{tap_strategy_path}/*.rb"].sort.each(&method(:require)) if Dir.exist?(tap_strategy_path)
+      ambiguous_names = []
+      unless full_name
+        ambiguous_names =
+          (formulae_and_casks_to_check - ambiguous_casks).group_by { |item| formula_or_cask_name(item) }
+                                                         .values
+                                                         .select { |items| items.length > 1 }
+                                                         .flatten
       end
 
       has_a_newer_upstream_version = T.let(false, T::Boolean)
@@ -115,7 +142,9 @@ module Homebrew
       formulae_checked = formulae_and_casks_to_check.map.with_index do |formula_or_cask, i|
         formula = formula_or_cask if formula_or_cask.is_a?(Formula)
         cask = formula_or_cask if formula_or_cask.is_a?(Cask::Cask)
-        name = formula_or_cask_name(formula_or_cask, full_name: full_name)
+
+        use_full_name = full_name || ambiguous_names.include?(formula_or_cask)
+        name = formula_or_cask_name(formula_or_cask, full_name: use_full_name)
 
         if debug && i.positive?
           puts <<~EOS
@@ -123,9 +152,11 @@ module Homebrew
             ----------
 
           EOS
+        elsif debug
+          puts
         end
 
-        skip_info = SkipConditions.skip_information(formula_or_cask, full_name: full_name, verbose: verbose)
+        skip_info = SkipConditions.skip_information(formula_or_cask, full_name: use_full_name, verbose: verbose)
         if skip_info.present?
           next skip_info if json
 
@@ -150,14 +181,14 @@ module Homebrew
         end
 
         current_str = current.to_s
-        current = actual_version(formula_or_cask, current)
+        current = LivecheckVersion.create(formula_or_cask, current)
 
         latest = if formula&.head_only?
           formula.head.downloader.fetch_last_commit
         else
           version_info = latest_version(
             formula_or_cask,
-            json: json, full_name: full_name, verbose: verbose, debug: debug,
+            json: json, full_name: use_full_name, verbose: verbose, debug: debug,
           )
           version_info[:latest] if version_info.present?
         end
@@ -168,7 +199,7 @@ module Homebrew
 
           next version_info if version_info.is_a?(Hash) && version_info[:status] && version_info[:messages]
 
-          next status_hash(formula_or_cask, "error", [no_versions_msg], full_name: full_name, verbose: verbose)
+          next status_hash(formula_or_cask, "error", [no_versions_msg], full_name: use_full_name, verbose: verbose)
         end
 
         if (m = latest.to_s.match(/(.*)-release$/)) && !current.to_s.match(/.*-release$/)
@@ -176,7 +207,7 @@ module Homebrew
         end
 
         latest_str = latest.to_s
-        latest = actual_version(formula_or_cask, latest)
+        latest = LivecheckVersion.create(formula_or_cask, latest)
 
         is_outdated = if formula&.head_only?
           # A HEAD-only formula is considered outdated if the latest upstream
@@ -213,15 +244,19 @@ module Homebrew
           next info
         end
 
-        print_latest_version(info, verbose: verbose)
+        print_latest_version(info, verbose: verbose, ambiguous_cask: ambiguous_casks.include?(formula_or_cask))
         nil
       rescue => e
         Homebrew.failed = true
+        use_full_name = full_name || ambiguous_names.include?(formula_or_cask)
 
         if json
           progress&.increment
-          status_hash(formula_or_cask, "error", [e.to_s], full_name: full_name, verbose: verbose)
+          status_hash(formula_or_cask, "error", [e.to_s], full_name: use_full_name, verbose: verbose)
         elsif !quiet
+          name = formula_or_cask_name(formula_or_cask, full_name: use_full_name)
+          name += " (cask)" if ambiguous_casks.include?(formula_or_cask)
+
           onoe "#{Tty.blue}#{name}#{Tty.reset}: #{e}"
           $stderr.puts e.backtrace if debug && !e.is_a?(Livecheck::Error)
           nil
@@ -239,7 +274,7 @@ module Homebrew
         end
       end
 
-      puts JSON.generate(formulae_checked.compact)
+      puts JSON.pretty_generate(formulae_checked.compact)
     end
 
     sig { params(formula_or_cask: T.any(Formula, Cask::Cask), full_name: T::Boolean).returns(String) }
@@ -299,9 +334,10 @@ module Homebrew
     end
 
     # Formats and prints the livecheck result for a formula.
-    sig { params(info: Hash, verbose: T::Boolean).void }
-    def print_latest_version(info, verbose:)
+    sig { params(info: Hash, verbose: T::Boolean, ambiguous_cask: T::Boolean).void }
+    def print_latest_version(info, verbose:, ambiguous_cask: false)
       formula_or_cask_s = "#{Tty.blue}#{info[:formula] || info[:cask]}#{Tty.reset}"
+      formula_or_cask_s += " (cask)" if ambiguous_cask
       formula_or_cask_s += " (guessed)" if !info[:meta][:livecheckable] && verbose
 
       current_s = if info[:version][:newer_than_upstream]
@@ -345,11 +381,11 @@ module Homebrew
 
       case formula_or_cask
       when Formula
-        urls << formula_or_cask.head.url if formula_or_cask.head
         if formula_or_cask.stable
           urls << formula_or_cask.stable.url
           urls.concat(formula_or_cask.stable.mirrors)
         end
+        urls << formula_or_cask.head.url if formula_or_cask.head
         urls << formula_or_cask.homepage if formula_or_cask.homepage
       when Cask::Cask
         urls << formula_or_cask.appcast.to_s if formula_or_cask.appcast
@@ -431,7 +467,6 @@ module Homebrew
       urls ||= checkable_urls(formula_or_cask)
 
       if debug
-        puts
         if formula
           puts "Formula:          #{formula_name(formula, full_name: full_name)}"
           puts "Head only?:       true" if formula.head_only?
@@ -452,12 +487,6 @@ module Homebrew
           end
         end
 
-        # Skip Gists until/unless we create a method of identifying revisions
-        if original_url.include?("gist.github.com")
-          odebug "Skipping: GitHub Gists are not supported"
-          next
-        end
-
         # Only preprocess the URL when it's appropriate
         url = if STRATEGY_SYMBOLS_TO_SKIP_PREPROCESS_URL.include?(livecheck_strategy)
           original_url
@@ -472,8 +501,7 @@ module Homebrew
           regex_provided:     livecheck_regex.present?,
           block_provided:     livecheck.strategy_block.present?,
         )
-        strategy = Strategy.from_symbol(livecheck_strategy)
-        strategy ||= strategies.first
+        strategy = Strategy.from_symbol(livecheck_strategy) || strategies.first
         strategy_name = livecheck_strategy_names[strategy]
 
         if debug
@@ -485,24 +513,28 @@ module Homebrew
           puts "Regex:            #{livecheck_regex.inspect}" if livecheck_regex.present?
         end
 
-        if livecheck_strategy == :page_match && (livecheck_regex.blank? && livecheck.strategy_block.blank?)
-          odebug "#{strategy_name} strategy requires a regex or block"
-          next
-        end
-
-        if livecheck_strategy.present? && livecheck_url.blank?
-          odebug "#{strategy_name} strategy requires a url"
-          next
-        end
-
-        if livecheck_strategy.present? && strategies.exclude?(strategy)
-          odebug "#{strategy_name} strategy does not apply to this URL"
-          next
+        if livecheck_strategy.present?
+          if livecheck_strategy == :page_match && (livecheck_regex.blank? && livecheck.strategy_block.blank?)
+            odebug "#{strategy_name} strategy requires a regex or block"
+            next
+          elsif livecheck_url.blank?
+            odebug "#{strategy_name} strategy requires a URL"
+            next
+          elsif strategies.exclude?(strategy)
+            odebug "#{strategy_name} strategy does not apply to this URL"
+            next
+          end
         end
 
         next if strategy.blank?
 
-        strategy_data = strategy.find_versions(url, livecheck_regex, &livecheck.strategy_block)
+        strategy_data = begin
+          strategy.find_versions(url, livecheck_regex, cask: cask, &livecheck.strategy_block)
+        rescue ArgumentError => e
+          raise unless e.message.include?("unknown keyword: cask")
+
+          odisabled "`def self.find_versions` in `#{strategy}` without a `cask` parameter"
+        end
         match_version_map = strategy_data[:matches]
         regex = strategy_data[:regex]
         messages = strategy_data[:messages]
@@ -530,7 +562,9 @@ module Homebrew
           end
         end
 
-        if debug && match_version_map.present?
+        next if match_version_map.blank?
+
+        if debug
           puts
           puts "Matched Versions:"
 
@@ -543,10 +577,8 @@ module Homebrew
           end
         end
 
-        next if match_version_map.blank?
-
         version_info = {
-          latest: Version.new(match_version_map.values.max_by { |v| actual_version(formula_or_cask, v) }),
+          latest: Version.new(match_version_map.values.max_by { |v| LivecheckVersion.create(formula_or_cask, v) }),
         }
 
         if json && verbose
@@ -569,18 +601,6 @@ module Homebrew
       end
 
       nil
-    end
-
-    sig { params(formula_or_cask: T.any(Formula, Cask::Cask), version: Version).returns(Version) }
-    def actual_version(formula_or_cask, version)
-      case formula_or_cask
-      when Formula
-        version
-      when Cask::Cask
-        Version.new(Cask::DSL::Version.new(version.to_s).before_comma)
-      else
-        T.absurd(formula_or_cask)
-      end
     end
   end
 end

@@ -19,7 +19,6 @@ bump-cask-pr
 bump-formula-pr
 bump-revision
 bump-unversioned-casks
-cask
 casks
 cat
 cleanup
@@ -27,12 +26,10 @@ command
 commands
 completions
 config
-configure
 create
 deps
 desc
 dispatch-build-bottle
-diy
 doctor
 dr
 edit
@@ -41,6 +38,7 @@ extract
 fetch
 formula
 formulae
+generate-man-completions
 gist-logs
 help
 home
@@ -49,6 +47,7 @@ info
 install
 install-bundler-gems
 irb
+lc
 leaves
 link
 linkage
@@ -59,7 +58,6 @@ log
 ls
 man
 migrate
-mirror
 missing
 options
 outdated
@@ -73,7 +71,6 @@ prof
 readall
 reinstall
 release
-release-notes
 remove
 rm
 rubocop
@@ -83,7 +80,6 @@ sh
 shellenv
 sponsors
 style
-switch
 tap
 tap-info
 tap-new
@@ -100,6 +96,7 @@ untap
 up
 update
 update-license-data
+update-maintainers
 update-python-resources
 update-reset
 update-test

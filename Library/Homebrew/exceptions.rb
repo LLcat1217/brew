@@ -92,8 +92,35 @@ class FormulaOrCaskUnavailableError < RuntimeError
   end
 
   sig { returns(String) }
+  def did_you_mean
+    similar_formula_names = Formula.fuzzy_search(name)
+    return "" if similar_formula_names.blank?
+
+    "Did you mean #{similar_formula_names.to_sentence two_words_connector: " or ", last_word_connector: " or "}?"
+  end
+
+  sig { returns(String) }
   def to_s
-    "No available formula or cask with the name \"#{name}\"."
+    "No available formula or cask with the name \"#{name}\". #{did_you_mean}".strip
+  end
+end
+
+# Raised when a formula or cask in a specific tap is not available.
+class TapFormulaOrCaskUnavailableError < FormulaOrCaskUnavailableError
+  extend T::Sig
+
+  attr_reader :tap
+
+  def initialize(tap, name)
+    super "#{tap}/#{name}"
+    @tap = tap
+  end
+
+  sig { returns(String) }
+  def to_s
+    s = super
+    s += "\nPlease tap it and then try again: brew tap #{tap}" unless tap.installed?
+    s
   end
 end
 
@@ -110,7 +137,7 @@ class FormulaUnavailableError < FormulaOrCaskUnavailableError
 
   sig { returns(String) }
   def to_s
-    "No available formula with the name \"#{name}\"#{dependent_s}."
+    "No available formula with the name \"#{name}\"#{dependent_s}. #{did_you_mean}".strip
   end
 end
 
@@ -199,6 +226,13 @@ class TapFormulaUnavailableError < FormulaUnavailableError
     s = super
     s += "\nPlease tap it and then try again: brew tap #{tap}" unless tap.installed?
     s
+  end
+end
+
+# Raised when a formula in a the core tap is unavailable.
+class CoreTapFormulaUnavailableError < TapFormulaUnavailableError
+  def initialize(name)
+    super CoreTap.instance, name
   end
 end
 
@@ -384,8 +418,8 @@ class FormulaUnknownPythonError < RuntimeError
       The version of Python to use with the virtualenv in the `#{formula.full_name}` formula
       cannot be guessed automatically because a recognised Python dependency could not be found.
 
-      If you are using a non-standard Python depedency, please add `:using => "python@x.y"` to
-      `virtualenv_install_with_resources` to resolve the issue manually.
+      If you are using a non-standard Python dependency, please add `:using => "python@x.y"`
+      to 'virtualenv_install_with_resources' to resolve the issue manually.
     EOS
   end
 end
@@ -394,10 +428,11 @@ end
 class FormulaAmbiguousPythonError < RuntimeError
   def initialize(formula)
     super <<~EOS
-      The version of python to use with the virtualenv in the `#{formula.full_name}` formula
-      cannot be guessed automatically. If the simultaneous use of multiple pythons
-      is intentional, please add `:using => "python@x.y"` to
-      `virtualenv_install_with_resources` to resolve the ambiguity manually.
+      The version of Python to use with the virtualenv in the `#{formula.full_name}` formula
+      cannot be guessed automatically.
+
+      If the simultaneous use of multiple Pythons is intentional, please add `:using => "python@x.y"`
+      to 'virtualenv_install_with_resources' to resolve the ambiguity manually.
     EOS
   end
 end
@@ -422,7 +457,7 @@ class BuildError < RuntimeError
 
   def fetch_issues
     GitHub.issues_for_formula(formula.name, tap: formula.tap, state: "open")
-  rescue GitHub::RateLimitExceededError => e
+  rescue GitHub::API::RateLimitExceededError => e
     opoo e.message
     []
   end
@@ -452,7 +487,7 @@ class BuildError < RuntimeError
     if formula.tap && defined?(OS::ISSUES_URL)
       if formula.tap.official?
         puts Formatter.error(Formatter.url(OS::ISSUES_URL), label: "READ THIS")
-      elsif issues_url = formula.tap.issues_url
+      elsif (issues_url = formula.tap.issues_url)
         puts <<~EOS
           If reporting this issue please do so at (not Homebrew/brew or Homebrew/core):
             #{Formatter.url(issues_url)}
@@ -578,19 +613,32 @@ class ErrorDuringExecution < RuntimeError
     @status = status
     @output = output
 
+    raise ArgumentError, "Status cannot be nil." if status.nil?
+
     exitstatus = case status
     when Integer
       status
+    when Hash
+      status["exitstatus"]
     else
-      status&.exitstatus
+      status.exitstatus
+    end
+
+    termsig = case status
+    when Integer
+      nil
+    when Hash
+      status["termsig"]
+    else
+      status.termsig
     end
 
     redacted_cmd = redact_secrets(cmd.shelljoin.gsub('\=', "="), secrets)
 
     reason = if exitstatus
       "exited with #{exitstatus}"
-    elsif (uncaught_signal = status&.termsig)
-      "was terminated by uncaught signal #{Signal.signame(uncaught_signal)}"
+    elsif termsig
+      "was terminated by uncaught signal #{Signal.signame(termsig)}"
     else
       raise ArgumentError, "Status neither has `exitstatus` nor `termsig`."
     end
@@ -694,5 +742,12 @@ class MacOSVersionError < RuntimeError
   def initialize(version)
     @version = version
     super "unknown or unsupported macOS version: #{version.inspect}"
+  end
+end
+
+# Raised when `detected_perl_shebang` etc cannot detect the shebang.
+class ShebangDetectionError < RuntimeError
+  def initialize(type, reason)
+    super "Cannot detect #{type} shebang: #{reason}."
   end
 end

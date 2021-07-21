@@ -1,5 +1,5 @@
 # typed: false
-# Frozen_string_literal: true
+# frozen_string_literal: true
 
 require "livecheck/livecheck"
 
@@ -68,13 +68,13 @@ describe Homebrew::Livecheck do
     it "returns a hash containing the livecheck status" do
       expect(livecheck.status_hash(f, "error", ["Unable to get versions"]))
         .to eq({
-                 formula:  "test",
-                 status:   "error",
-                 messages: ["Unable to get versions"],
-                 meta:     {
-                   livecheckable: true,
-                 },
-               })
+          formula:  "test",
+          status:   "error",
+          messages: ["Unable to get versions"],
+          meta:     {
+            livecheckable: true,
+          },
+        })
     end
   end
 
@@ -133,7 +133,7 @@ describe Homebrew::Livecheck do
 
   describe "::checkable_urls" do
     it "returns the list of URLs to check" do
-      expect(livecheck.checkable_urls(f)).to eq([head_url, stable_url, homepage_url])
+      expect(livecheck.checkable_urls(f)).to eq([stable_url, head_url, homepage_url])
       expect(livecheck.checkable_urls(c)).to eq([cask_url, homepage_url])
     end
   end

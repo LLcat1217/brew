@@ -6,16 +6,11 @@ require "cask/config"
 
 module Cask
   class Cmd
-    # Implementation of the `brew cask upgrade` command.
+    # Cask implementation of the `brew upgrade` command.
     #
     # @api private
     class Upgrade < AbstractCommand
       extend T::Sig
-
-      sig { returns(String) }
-      def self.description
-        "Upgrades all outdated casks or the specified casks."
-      end
 
       OPTIONS = [
         [:switch, "--skip-cask-deps", {
@@ -98,10 +93,21 @@ module Cask
           end
         end
 
+        manual_installer_casks = outdated_casks.select do |cask|
+          cask.artifacts.any?(Artifact::Installer::ManualInstaller)
+        end
+
+        if manual_installer_casks.present?
+          count = manual_installer_casks.count
+          ofail "Not upgrading #{count} `installer manual` #{"cask".pluralize(count)}."
+          puts manual_installer_casks.map(&:to_s)
+          outdated_casks -= manual_installer_casks
+        end
+
         return false if outdated_casks.empty?
 
         if casks.empty? && !greedy
-          ohai "Casks with `auto_updates` or `version :latest` will not be upgraded; pass `--greedy` to upgrade them."
+          ohai "Casks with 'auto_updates' or 'version :latest' will not be upgraded; pass `--greedy` to upgrade them."
         end
 
         verb = dry_run ? "Would upgrade" : "Upgrading"

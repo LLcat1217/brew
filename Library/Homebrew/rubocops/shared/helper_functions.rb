@@ -54,7 +54,7 @@ module RuboCop
       end
 
       # Returns the string representation if node is of type str(plain) or dstr(interpolated) or const.
-      def string_content(node)
+      def string_content(node, strip_dynamic: false)
         case node.type
         when :str
           node.str_content
@@ -62,12 +62,21 @@ module RuboCop
           content = ""
           node.each_child_node(:str, :begin) do |child|
             content += if child.begin_type?
-              child.source
+              strip_dynamic ? "" : child.source
             else
               child.str_content
             end
           end
           content
+        when :send
+          if node.method?(:+) && (node.receiver.str_type? || node.receiver.dstr_type?)
+            content = string_content(node.receiver)
+            arg = node.arguments.first
+            content += string_content(arg) if arg
+            content
+          else
+            ""
+          end
         when :const
           node.const_name
         when :sym
@@ -113,7 +122,12 @@ module RuboCop
       def find_method_calls_by_name(node, method_name)
         return if node.nil?
 
-        node.each_child_node(:send).select { |method_node| method_name == method_node.method_name }
+        nodes = node.each_child_node(:send).select { |method_node| method_name == method_node.method_name }
+
+        # The top level node can be a method
+        nodes << node if node.send_type? && node.method_name == method_name
+
+        nodes
       end
 
       # Returns an array of method call nodes matching method_name in every descendant of node.

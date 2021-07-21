@@ -102,11 +102,11 @@ module Cask
 
     def installed_caskfile
       installed_version = timestamped_versions.last
-      metadata_master_container_path.join(*installed_version, "Casks", "#{token}.rb")
+      metadata_main_container_path.join(*installed_version, "Casks", "#{token}.rb")
     end
 
     def config_path
-      metadata_master_container_path/"config.json"
+      metadata_main_container_path/"config.json"
     end
 
     def caskroom_path
@@ -162,19 +162,23 @@ module Cask
     end
 
     def eql?(other)
-      token == other.token
+      instance_of?(other.class) && token == other.token
     end
     alias == eql?
 
     def to_h
       {
         "token"          => token,
+        "full_token"     => full_name,
+        "tap"            => tap&.name,
         "name"           => name,
         "desc"           => desc,
         "homepage"       => homepage,
         "url"            => url,
         "appcast"        => appcast,
         "version"        => version,
+        "installed"      => versions.last,
+        "outdated"       => outdated?,
         "sha256"         => sha256,
         "artifacts"      => artifacts.map(&method(:to_h_gsubs)),
         "caveats"        => (to_h_string_gsubs(caveats) unless caveats.empty?),
